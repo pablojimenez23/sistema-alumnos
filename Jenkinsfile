@@ -8,6 +8,11 @@ pipeline {
         disableConcurrentBuilds()
     }
 
+    triggers {
+        // Auditoría programada (lunes a viernes, ~06:00): aparecen CVE nuevos aunque el código no cambie
+        cron('H 6 * * 1-5')
+    }
+
     environment {
         PIPENV_VENV_IN_PROJECT    = '1'
         PIPENV_IGNORE_VIRTUALENVS = '1'
@@ -79,12 +84,43 @@ pipeline {
             }
         }
 
-        // >>> [DEPLOY] aquí irá la etapa Deploy (paso 6)
+        stage('Deploy') {
+            steps {
+                // Despliega en el entorno de prueba (http://localhost:5000) y hace una prueba de humo
+                sh 'bash scripts/deploy_test.sh'
+            }
+        }
     }
 
     post {
         always {
             archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
         }
+        unstable {
+            echo '[ALERTA] El build quedó INESTABLE: hay hallazgos de seguridad. Revisa la carpeta reports/.'
+            script { notificar('INESTABLE') }
+        }
+        failure {
+            echo '[ALERTA] El build FALLÓ. Revisa el log de la etapa en rojo.'
+            script { notificar('FALLIDO') }
+        }
+        success {
+            echo '[OK] Build correcto: pruebas, análisis, dependencias y despliegue sin hallazgos.'
+        }
+    }
+}
+
+// Envía una alerta a un webhook. La URL NO va en el repositorio: es la credencial "webhook-alertas".
+def notificar(String estado) {
+    String mensaje = "Sistema Alumnos - build #${env.BUILD_NUMBER} ${estado}: ${env.BUILD_URL}"
+    echo "NOTIFICACION: ${mensaje}"
+    try {
+        withCredentials([string(credentialsId: 'webhook-alertas', variable: 'WEBHOOK_URL')]) {
+            withEnv(["MENSAJE=${mensaje}"]) {
+                sh 'curl -fsS -X POST -H "Content-Type: application/json" -d "{\\"content\\": \\"$MENSAJE\\", \\"text\\": \\"$MENSAJE\\"}" "$WEBHOOK_URL" > /dev/null'
+            }
+        }
+    } catch (err) {
+        echo "No se envió la notificación (¿creaste la credencial 'webhook-alertas'?): ${err.message}"
     }
 }
